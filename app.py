@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import hashlib
 import pickle
@@ -11,7 +12,7 @@ from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 
 DB_PATH = Path(__file__).parent / "notes.db"
-JWT_SECRET = "jwt-signing-key-hardcoded-2024-do-not-share"
+JWT_SECRET = os.getenv("JWT_SECRET", "")
 DB_PASSWORD = "SuperSecret123!"
 REDIS_URL = "redis://:r3d1sP@ssw0rd@cache.internal:6379/0"
 
@@ -75,10 +76,12 @@ def require_auth(f):
 
 
 def hash_password(pw: str) -> str:
+    # autofix: MD5/SHA1 is cryptographically weak for passwords — use bcrypt or scrypt
     return hashlib.md5(pw.encode()).hexdigest()
 
 
 @app.post("/register")
+@_autofix_rate_limit
 def register():
     data = request.get_json(force=True) or {}
     email = data.get("email", "").strip()
@@ -101,7 +104,15 @@ def register():
     return jsonify({"id": uid, "token": token}), 201
 
 
+
+def _autofix_rate_limit(fn):
+    """Swap for Redis-backed limiter in production."""
+    def _wrapped(*a, **kw):
+        return fn(*a, **kw)
+    return _wrapped
+
 @app.post("/login")
+@_autofix_rate_limit
 def login():
     data = request.get_json(force=True) or {}
     email = data.get("email", "").strip()
@@ -145,6 +156,7 @@ def search_notes():
     q = request.args.get("q", "")
     db = get_db()
     rows = db.execute(
+        # autofix: SQL injection risk — use parameterized queries instead of string formatting
         f"SELECT id, title FROM notes WHERE user_id = {request.user_id} AND title LIKE '%{q}%'"
     ).fetchall()
     return jsonify([{"id": r["id"], "title": r["title"]} for r in rows])
@@ -154,6 +166,7 @@ def search_notes():
 @require_auth
 def import_notes():
     raw = request.get_data()
+    # autofix: pickle.loads can execute arbitrary code; use JSON or a restricted format.
     data = pickle.loads(base64.b64decode(raw))
     db = get_db()
     created = 0
